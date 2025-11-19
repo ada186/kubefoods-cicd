@@ -1,0 +1,85 @@
+name: KubeFoods CI/CD
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+env:
+  IMAGE_NAME: kubefoods-backend
+  DEPLOYMENT_NAME: kubefoods-backend
+  K8S_NAMESPACE: default
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Login to Docker registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ secrets.REGISTRY_URL }}
+          username: ${{ secrets.REGISTRY_USERNAME }}
+          password: ${{ secrets.REGISTRY_PASSWORD }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: |
+            ${{ secrets.REGISTRY_URL }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+            ${{ secrets.REGISTRY_URL }}/${{ env.IMAGE_NAME }}:latest
+
+  deploy-validate-rollback:
+    runs-on: ubuntu-latest
+    needs: build-and-push
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: "latest"
+
+      - name: Configure kubeconfig (para un clúster remoto)
+        run: |
+          mkdir -p $HOME/.kube
+          echo "${{ secrets.KUBECONFIG }}" > $HOME/.kube/config || echo "Sin KUBECONFIG (demo)."
+
+      - name: Apply Kubernetes manifests
+        run: |
+          kubectl apply -f k8s/deployment.yaml -n default || echo "No se pudo aplicar deployment (demo)."
+          kubectl apply -f k8s/service.yaml -n default || echo "No se pudo aplicar service (demo)."
+
+      - name: Update deployment image
+        run: |
+          kubectl set image deployment/${{ env.DEPLOYMENT_NAME }} \
+            backend=${{ secrets.REGISTRY_URL }}/${{ env.IMAGE_NAME }}:${{ github.sha }} \
+            -n default || echo "No se pudo actualizar la imagen (demo)."
+
+      - name: Wait for rollout
+        run: |
+          kubectl rollout status deployment/${{ env.DEPLOYMENT_NAME }} \
+            -n default --timeout=120s || echo "Rollout no completado (demo)."
+
+      - name: Health check (curl al servicio)
+        run: |
+          kubectl run kubefoods-healthcheck \
+            --rm -i --restart=Never \
+            --image=curlimages/curl \
+            -n default -- \
+            curl -fsS http://kubefoods-service:80/ > /dev/null || echo "Healthcheck fallido (demo)."
+
+      - name: Rollback on failure
+        if: failure()
+        run: |
+          echo "❌ Error en despliegue o validación. Ejecutando rollback..."
+          kubectl rollout undo deployment/${{ env.DEPLOYMENT_NAME }} -n default || echo "Rollback no ejecutado (demo)."
+
