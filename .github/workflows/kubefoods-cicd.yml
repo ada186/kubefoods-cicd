@@ -30,7 +30,7 @@ jobs:
             ${{ env.IMAGE_FULL }}:${{ github.sha }}
             ${{ env.IMAGE_FULL }}:latest
 
-  deploy-validate-rollback:
+    deploy-validate-rollback:
     runs-on: ubuntu-latest
     needs: build-and-push
 
